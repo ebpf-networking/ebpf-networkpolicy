@@ -347,50 +347,69 @@ func assertPolicies(npc *networkPolicyController, namespace string, nPolicies in
 	return nil
 }
 
-func podPoliciesToStrings(pp *PodNetworkPolicies) []string {
-	var strings []string
+func assertIngressRules(npc *networkPolicyController, rules map[string][]string) error {
+	matchedRules := sets.NewString()
+	ingressRules, _ := npc.GetPodNetworkPolicies()
 
-	// FIXME ports
-
-	if pp.Ingress != nil {
-		strings = append(strings, "isolated for ingress")
-		for _, peer := range *pp.Ingress {
-			strings = append(strings, fmt.Sprintf("ingress from %s", peer.Peer))
-		}
-	}
-	if pp.Egress != nil {
-		strings = append(strings, "isolated for egress")
-		for _, peer := range *pp.Egress {
-			strings = append(strings, fmt.Sprintf("egress to %s", peer.Peer))
-		}
-	}
-	return strings
-}
-
-// Check policies for given pods (by IP)
-func assertPodPolicies(npc *networkPolicyController, podPolicies map[string][]string) error {
-	matchedPodPolicies := sets.NewString()
-	for _, pp := range npc.GetPodNetworkPolicies() {
-		podIP := pp.PodIP.String()
-		expected := podPolicies[podIP]
+	for podIP, podRules := range ingressRules {
+		expected := rules[podIP]
 		if expected == nil {
 			continue
 		}
-		matchedPodPolicies.Insert(podIP)
+		matchedRules.Insert(podIP)
 
-		assertedPodPolicies := sets.NewString(expected...)
-		podPolicies := sets.NewString(podPoliciesToStrings(pp)...)
-		if !podPolicies.Equal(assertedPodPolicies) {
-			return fmt.Errorf("pods[%s] expected %v got %v", podIP, assertedPodPolicies.List(), podPolicies.List())
+		assertedRules := sets.NewString(expected...)
+		actualRules := sets.NewString("isolated for ingress")
+		for _, br := range podRules {
+			// FIXME ports
+			actualRules.Insert(fmt.Sprintf("ingress from %s", br.Peer))
+		}
+
+		if !actualRules.Equal(assertedRules) {
+			return fmt.Errorf("pods[%s] expected %v got %v", podIP, assertedRules.List(), actualRules.List())
 		}
 	}
 
-	if len(matchedPodPolicies) != len(podPolicies) {
-		assertedPodPolicies := sets.NewString()
-		for podIP := range podPolicies {
-			assertedPodPolicies.Insert(podIP)
+	if len(matchedRules) != len(rules) {
+		assertedRules := sets.NewString()
+		for podIP := range rules {
+			assertedRules.Insert(podIP)
 		}
-		return fmt.Errorf("some policies were not matched: %v", assertedPodPolicies.Difference(matchedPodPolicies).List())
+		return fmt.Errorf("some rules were not matched: %v", assertedRules.Difference(matchedRules).List())
+	}
+
+	return nil
+}
+
+func assertEgressRules(npc *networkPolicyController, rules map[string][]string) error {
+	matchedRules := sets.NewString()
+	_, egressRules := npc.GetPodNetworkPolicies()
+
+	for podIP, podRules := range egressRules {
+		expected := rules[podIP]
+		if expected == nil {
+			continue
+		}
+		matchedRules.Insert(podIP)
+
+		assertedRules := sets.NewString(expected...)
+		actualRules := sets.NewString("isolated for egress")
+		for _, br := range podRules {
+			// FIXME ports
+			actualRules.Insert(fmt.Sprintf("egress to %s", br.Peer))
+		}
+
+		if !actualRules.Equal(assertedRules) {
+			return fmt.Errorf("pods[%s] expected %v got %v", podIP, assertedRules.List(), actualRules.List())
+		}
+	}
+
+	if len(matchedRules) != len(rules) {
+		assertedRules := sets.NewString()
+		for podIP := range rules {
+			assertedRules.Insert(podIP)
+		}
+		return fmt.Errorf("some rules were not matched: %v", assertedRules.Difference(matchedRules).List())
 	}
 
 	return nil
@@ -460,7 +479,7 @@ func TestNetworkPolicy(t *testing.T) {
 			t.Error(err.Error())
 		}
 	}
-	err := assertPodPolicies(npc, map[string][]string{})
+	err := assertIngressRules(npc, map[string][]string{})
 	if err != nil {
 		t.Error(err.Error())
 	}
@@ -489,7 +508,7 @@ func TestNetworkPolicy(t *testing.T) {
 		}
 	}
 
-	err = assertPodPolicies(npc, map[string][]string{
+	err = assertIngressRules(npc, map[string][]string{
 		// one/client
 		"10.1.0.2": []string{
 			"isolated for ingress",
@@ -586,7 +605,7 @@ func TestNetworkPolicy(t *testing.T) {
 	if err != nil {
 		t.Error(err.Error())
 	}
-	err = assertPodPolicies(npc, map[string][]string{
+	err = assertIngressRules(npc, map[string][]string{
 		// one/client
 		"10.1.0.2": []string{
 			"isolated for ingress",
@@ -652,7 +671,7 @@ func TestNetworkPolicy(t *testing.T) {
 	if err != nil {
 		t.Error(err.Error())
 	}
-	err = assertPodPolicies(npc, map[string][]string{
+	err = assertIngressRules(npc, map[string][]string{
 		// one/client
 		"10.1.0.2": []string{
 			"isolated for ingress",
@@ -718,7 +737,7 @@ func TestNetworkPolicy(t *testing.T) {
 	if err != nil {
 		t.Error(err.Error())
 	}
-	err = assertPodPolicies(npc, map[string][]string{
+	err = assertIngressRules(npc, map[string][]string{
 		"10.2.0.2": []string{
 			"isolated for ingress",
 			"ingress from 10.2.0.2/32",
@@ -851,7 +870,7 @@ func TestNetworkPolicy(t *testing.T) {
 			t.Errorf("Unexpected namespace %s", namespace)
 		}
 	}
-	err = assertPodPolicies(npc, map[string][]string{
+	err = assertIngressRules(npc, map[string][]string{
 		"10.1.0.2": []string{
 			"isolated for ingress",
 			"ingress from 10.1.0.2/32",
@@ -973,7 +992,7 @@ func TestNetworkPolicy(t *testing.T) {
 		t.Error(err.Error())
 	}
 
-	err = assertPodPolicies(npc, map[string][]string{
+	err = assertIngressRules(npc, map[string][]string{
 		"10.1.0.2": []string{
 			"isolated for ingress",
 			"ingress from 10.1.0.2/32",
@@ -1059,7 +1078,7 @@ func TestNetworkPolicy_ipBlock(t *testing.T) {
 	if err != nil {
 		t.Error(err.Error())
 	}
-	err = assertPodPolicies(npc, map[string][]string{
+	err = assertIngressRules(npc, map[string][]string{
 		"10.0.0.2": []string{
 			"isolated for ingress",
 			"ingress from 192.168.0.0/24",
@@ -1112,7 +1131,7 @@ func TestNetworkPolicy_ipBlock(t *testing.T) {
 	if err != nil {
 		t.Error(err.Error())
 	}
-	err = assertPodPolicies(npc, map[string][]string{
+	err = assertIngressRules(npc, map[string][]string{
 		"10.0.0.2": []string{
 			"isolated for ingress",
 			"ingress from 192.168.0.0/24",
@@ -1200,7 +1219,7 @@ func TestNetworkPolicy_ipBlock(t *testing.T) {
 	if err != nil {
 		t.Error(err.Error())
 	}
-	err = assertPodPolicies(npc, map[string][]string{
+	err = assertIngressRules(npc, map[string][]string{
 		"10.0.0.2": []string{
 			"isolated for ingress",
 			"ingress from 192.168.0.0/24",
@@ -1266,13 +1285,22 @@ func TestNetworkPolicy_egress(t *testing.T) {
 	if err != nil {
 		t.Error(err.Error())
 	}
-	err = assertPodPolicies(npc, map[string][]string{
+	err = assertIngressRules(npc, map[string][]string{
 		"10.0.0.2": []string{
 			"isolated for ingress",
-			"isolated for egress",
 		},
 		"10.0.0.99": []string{
 			"isolated for ingress",
+		},
+	})
+	if err != nil {
+		t.Error(err.Error())
+	}
+	err = assertEgressRules(npc, map[string][]string{
+		"10.0.0.2": []string{
+			"isolated for egress",
+		},
+		"10.0.0.99": []string{
 			"isolated for egress",
 		},
 	})
@@ -1313,14 +1341,23 @@ func TestNetworkPolicy_egress(t *testing.T) {
 	if err != nil {
 		t.Error(err.Error())
 	}
-	err = assertPodPolicies(npc, map[string][]string{
+	err = assertIngressRules(npc, map[string][]string{
 		"10.0.0.2": []string{
 			"isolated for ingress",
+		},
+		"10.0.0.99": []string{
+			"isolated for ingress",
+		},
+	})
+	if err != nil {
+		t.Error(err.Error())
+	}
+	err = assertEgressRules(npc, map[string][]string{
+		"10.0.0.2": []string{
 			"isolated for egress",
 			"egress to 10.0.0.99/32",
 		},
 		"10.0.0.99": []string{
-			"isolated for ingress",
 			"isolated for egress",
 		},
 	})
@@ -1378,11 +1415,22 @@ func TestNetworkPolicy_egress(t *testing.T) {
 	if err != nil {
 		t.Error(err.Error())
 	}
-	err = assertPodPolicies(npc, map[string][]string{
+	err = assertIngressRules(npc, map[string][]string{
 		"10.0.0.2": []string{
 			"isolated for ingress",
-			"isolated for egress",
 			"ingress from 10.0.0.2/32",
+		},
+		"10.0.0.99": []string{
+			"isolated for ingress",
+			"ingress from 10.0.0.2/32",
+		},
+	})
+	if err != nil {
+		t.Error(err.Error())
+	}
+	err = assertEgressRules(npc, map[string][]string{
+		"10.0.0.2": []string{
+			"isolated for egress",
 			"egress to 10.0.0.99/32",
 			"egress to 10.1.0.2/32",
 			"egress to 10.1.0.99/32",
@@ -1390,9 +1438,7 @@ func TestNetworkPolicy_egress(t *testing.T) {
 			"egress to 10.3.0.99/32",
 		},
 		"10.0.0.99": []string{
-			"isolated for ingress",
 			"isolated for egress",
-			"ingress from 10.0.0.2/32",
 			"egress to 10.1.0.2/32",
 			"egress to 10.1.0.99/32",
 			"egress to 10.3.0.2/32",
@@ -1472,7 +1518,7 @@ func TestNetworkPolicy_egress(t *testing.T) {
 	if err != nil {
 		t.Error(err.Error())
 	}
-	err = assertPodPolicies(npc, map[string][]string{
+	err = assertIngressRules(npc, map[string][]string{
 		"10.2.0.2": []string{
 			"isolated for ingress",
 		},
@@ -1481,6 +1527,10 @@ func TestNetworkPolicy_egress(t *testing.T) {
 			"ingress from 10.2.0.2/32",
 		},
 	})
+	if err != nil {
+		t.Error(err.Error())
+	}
+	err = assertEgressRules(npc, map[string][]string{})
 	if err != nil {
 		t.Error(err.Error())
 	}
@@ -1549,11 +1599,18 @@ func TestNetworkPolicy_egress(t *testing.T) {
 	if err != nil {
 		t.Error(err.Error())
 	}
-	err = assertPodPolicies(npc, map[string][]string{
+	err = assertIngressRules(npc, map[string][]string{
 		"10.3.0.99": []string{
 			"isolated for ingress",
-			"isolated for egress",
 			"ingress from 10.3.0.2/32",
+		},
+	})
+	if err != nil {
+		t.Error(err.Error())
+	}
+	err = assertEgressRules(npc, map[string][]string{
+		"10.3.0.99": []string{
+			"isolated for egress",
 			"egress to 10.3.0.2/32",
 		},
 	})

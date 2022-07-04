@@ -7,4 +7,5 @@ package dependencymagnet
 
 import (
 	_ "github.com/openshift/build-machinery-go"
+	_ "github.com/cilium/ebpf/cmd/bpf2go"
 )

@@ -1,0 +1,5 @@
+networkpolicy_bpfeb.go
+networkpolicy_bpfeb.o
+networkpolicy_bpfel.go
+networkpolicy_bpfel.o
+include/vmlinux.h

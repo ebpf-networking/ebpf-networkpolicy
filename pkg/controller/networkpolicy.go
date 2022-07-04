@@ -12,13 +12,13 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	corev1listers "k8s.io/client-go/listers/core/v1"
 	networkingv1listers "k8s.io/client-go/listers/networking/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 
+	"github.com/ebpf-networking/ebpf-networkpolicy/pkg/bpf"
 	"github.com/ebpf-networking/ebpf-networkpolicy/pkg/util"
 	"github.com/ebpf-networking/ebpf-networkpolicy/pkg/util/ranges"
 )
@@ -426,86 +426,71 @@ func (npc *networkPolicyController) recompute() {
 	}
 }
 
-type PodNetworkPolicies struct {
-	PodIP net.IP
-
-	Ingress *[]PodNetworkPolicyPeer
-	Egress *[]PodNetworkPolicyPeer
-}
-
-type PodNetworkPolicyPeer struct {
-	Peer *net.IPNet
-
-	Port     uint16
-	PortMask uint16
-	Protocol uint8
-}
-
-func (npc *networkPolicyController) GetPodNetworkPolicies() map[types.UID]*PodNetworkPolicies {
+func (npc *networkPolicyController) GetPodNetworkPolicies() (ingressPolicies, egressPolicies map[string][]bpf.NetworkPolicyRule) {
 	npc.Lock()
 	defer npc.Unlock()
 
-	policies := make(map[types.UID]*PodNetworkPolicies)
+	ingressPolicies = make(map[string][]bpf.NetworkPolicyRule)
+	egressPolicies = make(map[string][]bpf.NetworkPolicyRule)
 	for _, npp := range npc.policies {
 		for _, pod := range npp.targets {
-			pp := policies[pod.UID]
-			if pp == nil {
-				pp = &PodNetworkPolicies{PodIP: net.ParseIP(pod.Status.PodIPs[0].IP)}
-				policies[pod.UID] = pp
-			}
+			podIPStr := pod.Status.PodIPs[0].IP
+			podIP := net.ParseIP(podIPStr)
 
 			if npp.ingress != nil {
-				if pp.Ingress == nil {
-					pp.Ingress = &[]PodNetworkPolicyPeer{}
+				ingressRules, exists := ingressPolicies[podIPStr]
+				if !exists {
+					ingressRules = []bpf.NetworkPolicyRule{}
 				}
 				for _, rule := range *npp.ingress {
-					*pp.Ingress = append(*pp.Ingress, podPeersFromRule(rule)...)
+					ingressRules = append(ingressRules, bpfRulesFromRule(podIP, rule)...)
 				}
+				ingressPolicies[podIPStr] = ingressRules
 			}
+
 			if npp.egress != nil {
-				if pp.Egress == nil {
-					pp.Egress = &[]PodNetworkPolicyPeer{}
+				egressRules, exists := egressPolicies[podIPStr]
+				if !exists {
+					egressRules = []bpf.NetworkPolicyRule{}
 				}
 				for _, rule := range *npp.egress {
-					*pp.Egress = append(*pp.Egress, podPeersFromRule(rule)...)
+					egressRules = append(egressRules, bpfRulesFromRule(podIP, rule)...)
 				}
+				egressPolicies[podIPStr] = egressRules
 			}
 		}
 	}
 
-	return policies
+	return ingressPolicies, egressPolicies
 }
 
-func podPeersFromRule(rule *networkPolicyRule) []PodNetworkPolicyPeer {
-	var pp PodNetworkPolicyPeer
+func bpfRulesFromRule(podIP net.IP, rule *networkPolicyRule) []bpf.NetworkPolicyRule {
+	br := bpf.NetworkPolicyRule{
+		PodIP: podIP,
+	}
 
 	if rule.port != nil {
-		pp.Protocol = getProtocol(rule.port.protocol)
-		pp.Port = rule.port.port
-		pp.PortMask = rule.port.portMask
+		br.Protocol = getProtocol(rule.port.protocol)
+		br.Port = rule.port.port
+		br.PortMask = rule.port.portMask
 	}
 
 	if rule.peer == nil {
-		peers := make([]PodNetworkPolicyPeer, 0, 2)
-		pp.Peer = &net.IPNet{IP: net.IPv4zero, Mask: net.CIDRMask(0, 32)}
-		peers = append(peers, pp)
-		pp.Peer = &net.IPNet{IP: net.IPv6zero, Mask: net.CIDRMask(0, 128)}
-		peers = append(peers, pp)
-		return peers
+		return []bpf.NetworkPolicyRule{br}
 	}
 
-	peers := make([]PodNetworkPolicyPeer, 0, len(rule.peer.pods) + len(rule.peer.cidrs))
+	rules := make([]bpf.NetworkPolicyRule, 0, len(rule.peer.pods) + len(rule.peer.cidrs))
 
 	for _, pod := range rule.peer.pods {
-		pp.Peer = &net.IPNet{IP: net.ParseIP(pod.Status.PodIPs[0].IP), Mask: net.CIDRMask(32, 32)}
-		peers = append(peers, pp)
+		br.Peer = &net.IPNet{IP: net.ParseIP(pod.Status.PodIPs[0].IP), Mask: net.CIDRMask(32, 32)}
+		rules = append(rules, br)
 	}
 	for _, cidr := range rule.peer.cidrs {
-		_, pp.Peer, _ = net.ParseCIDR(cidr)
-		peers = append(peers, pp)
+		_, br.Peer, _ = net.ParseCIDR(cidr)
+		rules = append(rules, br)
 	}
 
-	return peers
+	return rules
 }
 
 func getProtocol(protocol v1.Protocol) uint8 {

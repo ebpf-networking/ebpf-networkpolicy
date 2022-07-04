@@ -15,3 +15,15 @@ $(call build-image,ebpf-networkpolicy-controller,ebpf-networkpolicy-controller,.
 # This builds a debug image without depending on OCP build tools...
 debug-image:
 	podman build --no-cache -f Dockerfile -t "ebpf-networkpolicy:debug" .
+
+# eBPF stuff
+clean: ebpf-clean
+.PHONY: ebpf-clean
+build: ebpf-build
+.PHONE: ebpf-build
+
+ebpf-clean:
+	make -C pkg/bpf clean
+
+ebpf-build:
+	make -C pkg/bpf all
