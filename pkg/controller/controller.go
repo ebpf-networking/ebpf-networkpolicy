@@ -19,10 +19,7 @@ func Run() {
 		klog.Fatal("Could not create kubernetes clients: %v", err)
 	}
 
-	npc, err := newNetworkPolicyController(client, informers, stopCh)
-	if err != nil {
-		klog.Fatal("Could not set up NetworkPolicy controller: %v", err)
-	}
+	npc := newNetworkPolicyController(client, informers, stopCh)
 
 	if !informers.Start(stopCh) {
 		// This will only fail if stopCh was signalled, in which case something
@@ -30,10 +27,7 @@ func Run() {
 		return
 	}		
 
-	err = npc.Run()
-	if err != nil {
-		klog.Fatal("Error running NetworkPolicy controller: %v", err)
-	}
+	npc.Run()
 
 	<- stopCh
 }

@@ -1,16 +1,13 @@
 package controller
 
 import (
-	"fmt"
 	"reflect"
-	"strings"
 	"sync"
 
 	"k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	corev1listers "k8s.io/client-go/listers/core/v1"
 	networkingv1listers "k8s.io/client-go/listers/networking/v1"
@@ -31,7 +28,7 @@ type networkPolicyController struct {
 	podLister           corev1listers.PodLister
 	networkPolicyLister networkingv1listers.NetworkPolicyLister
 
-	policies map[types.UID]*networkPolicy
+	policies []*networkPolicy
 }
 
 // networkPolicy represents a networkingv1.NetworkPolicy with all of the
@@ -52,24 +49,10 @@ type networkPolicyRule struct {
 	peer *networkPolicyPeer
 }
 
-func (rule *networkPolicyRule) String() string {
-	return fmt.Sprintf("%s, %s", rule.peer, rule.port)
-}
-
 type networkPolicyPort struct {
 	protocol v1.Protocol
 	port     int32
 	endPort  *int32
-}
-
-func (port *networkPolicyPort) String() string {
-	if port == nil {
-		return "all ports"
-	} else if port.endPort != nil {
-		return fmt.Sprintf("%s ports %d-%d", port.protocol, port.port, *port.endPort)
-	} else {
-		return fmt.Sprintf("%s port %d", port.protocol, port.port)
-	}
 }
 
 type networkPolicyPeer struct {
@@ -77,21 +60,7 @@ type networkPolicyPeer struct {
 	cidrs []string
 }
 
-func (peer *networkPolicyPeer) String() string {
-	if peer == nil {
-		return "all peers"
-	}
-	peers := make([]string, 0, 2*len(peer.pods) + len(peer.cidrs))
-	for _, pod := range peer.pods {
-		for _, podIP := range pod.Status.PodIPs {
-			peers = append(peers, podIP.IP)
-		}
-	}
-	peers = append(peers, peer.cidrs...)
-	return strings.Join(peers, ", ")
-}
-
-func newNetworkPolicyController(client kubernetes.Interface, informers *util.InformerManager, _ <-chan struct{}) (*networkPolicyController, error) {
+func newNetworkPolicyController(client kubernetes.Interface, informers *util.InformerManager, _ <-chan struct{}) *networkPolicyController {
 	npc := &networkPolicyController{
 		client:    client,
 		informers: informers,
@@ -106,10 +75,10 @@ func newNetworkPolicyController(client kubernetes.Interface, informers *util.Inf
 	informers.Use(informers.Core().V1().Pods().Informer())
 	informers.Use(informers.Networking().V1().NetworkPolicies().Informer())
 
-	return npc, nil
+	return npc
 }
 
-func (npc *networkPolicyController) Run() error {
+func (npc *networkPolicyController) Run() {
 	npc.Lock()
 	defer npc.Unlock()
 
@@ -119,13 +88,11 @@ func (npc *networkPolicyController) Run() error {
 		&v1.Pod{}, npc.handleAddOrUpdatePod, npc.handleDeletePod)
 	npc.informers.AddEventHandler(npc.informers.Networking().V1().NetworkPolicies().Informer(),
 		&networkingv1.NetworkPolicy{}, npc.handleAddOrUpdateNetworkPolicy, npc.handleDeleteNetworkPolicy)
-
-	return nil
 }
 
 func (npc *networkPolicyController) handleAddOrUpdateNamespace(obj, old interface{}) {
 	ns := obj.(*v1.Namespace)
-	klog.InfoS("Add/Update Namespace", "namespace", klog.KObj(ns))
+	klog.V(4).InfoS("Add/Update Namespace", "namespace", klog.KObj(ns))
 
 	if old != nil {
 		oldNs := old.(*v1.Namespace)
@@ -141,7 +108,7 @@ func (npc *networkPolicyController) handleAddOrUpdateNamespace(obj, old interfac
 
 func (npc *networkPolicyController) handleDeleteNamespace(obj interface{}) {
 	ns := obj.(*v1.Namespace)
-	klog.InfoS("Delete Namespace", "namespace", klog.KObj(ns))
+	klog.V(4).InfoS("Delete Namespace", "namespace", klog.KObj(ns))
 
 	npc.Lock()
 	defer npc.Unlock()
@@ -158,7 +125,7 @@ func isOnPodNetwork(pod *v1.Pod) bool {
 
 func (npc *networkPolicyController) handleAddOrUpdatePod(obj, old interface{}) {
 	pod := obj.(*v1.Pod)
-	klog.InfoS("Add/Update Pod", "pod", klog.KObj(pod))
+	klog.V(4).InfoS("Add/Update Pod", "pod", klog.KObj(pod))
 
 	if !isOnPodNetwork(pod) {
 		return
@@ -178,7 +145,7 @@ func (npc *networkPolicyController) handleAddOrUpdatePod(obj, old interface{}) {
 
 func (npc *networkPolicyController) handleDeletePod(obj interface{}) {
 	pod := obj.(*v1.Pod)
-	klog.InfoS("Delete Pod", "pod", klog.KObj(pod))
+	klog.V(4).InfoS("Delete Pod", "pod", klog.KObj(pod))
 
 	npc.Lock()
 	defer npc.Unlock()
@@ -187,7 +154,7 @@ func (npc *networkPolicyController) handleDeletePod(obj interface{}) {
 
 func (npc *networkPolicyController) handleAddOrUpdateNetworkPolicy(obj, _ interface{}) {
 	policy := obj.(*networkingv1.NetworkPolicy)
-	klog.InfoS("Add/Update NetworkPolicy", "networkpolicy", klog.KObj(policy))
+	klog.V(4).InfoS("Add/Update NetworkPolicy", "networkpolicy", klog.KObj(policy))
 
 	npc.Lock()
 	defer npc.Unlock()
@@ -196,7 +163,7 @@ func (npc *networkPolicyController) handleAddOrUpdateNetworkPolicy(obj, _ interf
 
 func (npc *networkPolicyController) handleDeleteNetworkPolicy(obj interface{}) {
 	policy := obj.(*networkingv1.NetworkPolicy)
-	klog.InfoS("Delete NetworkPolicy", "networkpolicy", klog.KObj(policy))
+	klog.V(4).InfoS("Delete NetworkPolicy", "networkpolicy", klog.KObj(policy))
 
 	npc.Lock()
 	defer npc.Unlock()
@@ -204,7 +171,7 @@ func (npc *networkPolicyController) handleDeleteNetworkPolicy(obj interface{}) {
 }
 
 func (npc *networkPolicyController) selectPodsFromNamespaces(nsLabelSel, podLabelSel *metav1.LabelSelector) []*v1.Pod {
-	var pods []*v1.Pod
+	var matchedPods []*v1.Pod
 
 	nsSel, err := metav1.LabelSelectorAsSelector(nsLabelSel)
 	if err != nil {
@@ -234,15 +201,17 @@ func (npc *networkPolicyController) selectPodsFromNamespaces(nsLabelSel, podLabe
 		}
 		for _, pod := range pods {
 			if isOnPodNetwork(pod) {
-				pods = append(pods, pod)
+				matchedPods = append(matchedPods, pod)
 			}
 		}
 	}
 
-	return pods
+	return matchedPods
 }
 
 func (npc *networkPolicyController) selectPods(namespace string, lsel *metav1.LabelSelector) []*v1.Pod {
+	var matchedPods []*v1.Pod
+
 	sel, err := metav1.LabelSelectorAsSelector(lsel)
 	if err != nil {
 		// Shouldn't be possible
@@ -257,10 +226,10 @@ func (npc *networkPolicyController) selectPods(namespace string, lsel *metav1.La
 	}
 	for _, pod := range pods {
 		if isOnPodNetwork(pod) {
-			pods = append(pods, pod)
+			matchedPods = append(matchedPods, pod)
 		}
 	}
-	return pods
+	return matchedPods
 }
 
 // parsePeers parses an array of NetworkPolicyPeer into a *networkPolicyPeer. Each element
@@ -272,7 +241,7 @@ func (npc *networkPolicyController) parsePeers(namespace string, npp *networkPol
 		return nil
 	}
 
-	var pp networkPolicyPeer
+	pp := &networkPolicyPeer{}
 	for _, peer := range peers {
 		if peer.PodSelector != nil && peer.NamespaceSelector == nil {
 			pp.pods = append(pp.pods, npc.selectPods(namespace, peer.PodSelector)...)
@@ -291,7 +260,7 @@ func (npc *networkPolicyController) parsePeers(namespace string, npp *networkPol
 		}
 	}
 
-	return &pp
+	return pp
 }
 
 // findPodPort finds a ContainerPort in pod with the given portName, returning 0 if there
@@ -397,29 +366,14 @@ func (npc *networkPolicyController) parseNetworkPolicy(policy *networkingv1.Netw
 }
 
 func (npc *networkPolicyController) recompute() {
-	klog.InfoS("RECOMPUTING POLICIES")
-
 	policies, err := npc.networkPolicyLister.NetworkPolicies(v1.NamespaceAll).List(labels.Everything())
 	if err != nil {
 		klog.ErrorS(err, "Error listing NetworkPolicies")
 		return
 	}
 
-	for _, policy := range policies {
-		npp := npc.parseNetworkPolicy(policy)
-		klog.InfoS("Policy", "networkpolicy", klog.KObj(policy), "targets", len(npp.targets))
-		for _, pod := range npp.targets {
-			klog.InfoS("Isolate", pod, klog.KObj(pod))
-			if npp.ingress != nil {
-				for _, rule := range *npp.ingress {
-					klog.InfoS("Allow ingress", "pod", klog.KObj(pod), "rule", rule)
-				}
-			}
-			if npp.egress != nil {
-				for _, rule := range *npp.ingress {
-					klog.InfoS("Allow egress", "pod", klog.KObj(pod), "rule", rule)
-				}
-			}
-		}
+	npc.policies = make([]*networkPolicy, len(policies))
+	for i, policy := range policies {
+		npc.policies[i] = npc.parseNetworkPolicy(policy)
 	}
 }
