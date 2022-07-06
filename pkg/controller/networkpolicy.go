@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"math"
 	"reflect"
 	"sync"
 
@@ -51,8 +52,8 @@ type networkPolicyRule struct {
 
 type networkPolicyPort struct {
 	protocol v1.Protocol
-	port     int32
-	endPort  *int32
+	port     uint16
+	portMask uint16
 }
 
 type networkPolicyPeer struct {
@@ -287,19 +288,36 @@ func (npc *networkPolicyController) parseRuleWithPeer(namespace string, npp *net
 		return rules
 	}
 
-	// Find integer ports / port ranges first
+	// Integer ports first
 	for _, port := range ports {
-		if port.Port.Type != intstr.Int {
+		if port.Port.Type != intstr.Int || port.EndPort != nil {
 			continue
 		}
 		rules = append(rules, &networkPolicyRule{
 			port: &networkPolicyPort{
 				protocol: *port.Protocol,
-				port:     port.Port.IntVal,
-				endPort:  port.EndPort,
+				port:     uint16(port.Port.IntVal),
+				portMask: math.MaxUint16,
 			},
 			peer: peer,
 		})
+	}
+
+	// Then port ranges (which get converted to port+mask)
+	for _, port := range ports {
+		if port.Port.Type != intstr.Int || port.EndPort == nil {
+			continue
+		}
+		for _, portMask := range ranges.PortRangeToPortMasks(int(port.Port.IntVal), int(*port.EndPort)) {
+			rules = append(rules, &networkPolicyRule{
+				port: &networkPolicyPort{
+					protocol: *port.Protocol,
+					port:     portMask.Port,
+					portMask: portMask.Mask,
+				},
+				peer: peer,
+			})
+		}
 	}
 
 	// Match up named ports
@@ -320,7 +338,8 @@ func (npc *networkPolicyController) parseRuleWithPeer(namespace string, npp *net
 			rules = append(rules, &networkPolicyRule{
 				port: &networkPolicyPort{
 					protocol: *port.Protocol,
-					port:     matchedPort,
+					port:     uint16(matchedPort),
+					portMask: math.MaxUint16,
 				},
 				peer: &networkPolicyPeer{
 					pods: pods,

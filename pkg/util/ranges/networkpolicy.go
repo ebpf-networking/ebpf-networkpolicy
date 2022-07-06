@@ -2,7 +2,6 @@ package ranges
 
 import (
 	"encoding/binary"
-	"fmt"
 	"net"
 
 	networkingv1 "k8s.io/api/networking/v1"
@@ -93,7 +92,12 @@ func rangesForIPBlock(ipBlock *networkingv1.IPBlock) []intRange {
 	return ranges
 }
 
-// PortRangeToPortMasks returns an array of port/mask strings corresponding to the given
+type PortRangeMask struct {
+	Port uint16
+	Mask uint16
+}
+
+// PortRangeToPortMasks returns an array of ports/masks corresponding to the given
 // start and end values.
 //
 // Here the problem is that we need ">=" and "<=", which OpenFlow doesn't have. So we have
@@ -104,12 +108,13 @@ func rangesForIPBlock(ipBlock *networkingv1.IPBlock) []intRange {
 // each value from start to end, for a total of (end-start+1) rules. PortRangeToPortMasks
 // generates the same number of rules as the naive implementation when start==end or when
 // start is odd and end==start+1, but in all other cases it generates fewer total rules.)
-func PortRangeToPortMasks(start, end int) []string {
+func PortRangeToPortMasks(start, end int) []PortRangeMask {
 	portRange := intRange{uint32(start), uint32(end)}
 	rangeMasks := portRange.toRangeMasks()
-	masks := make([]string, len(rangeMasks))
+	masks := make([]PortRangeMask, len(rangeMasks))
 	for i, rm := range rangeMasks {
-		masks[i] = fmt.Sprintf("0x%04x/0x%04x", uint16(rm.start), uint16(rm.mask))
+		masks[i].Port = uint16(rm.start)
+		masks[i].Mask = uint16(rm.mask)
 	}
 	return masks
 }

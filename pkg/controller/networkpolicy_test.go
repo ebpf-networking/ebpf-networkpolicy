@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"math"
 	"reflect"
 	"testing"
 	"time"
@@ -257,8 +258,8 @@ func addBadPods(npc *networkPolicyController, namespace string) {
 func portToString(port *networkPolicyPort) string {
 	if port == nil {
 		return ""
-	} else if port.endPort != nil {
-		return fmt.Sprintf(" (%s %d-%d)", port.protocol, port.port, *port.endPort)
+	} else if port.portMask != math.MaxUint16 {
+		return fmt.Sprintf(" (%s %04x/%04x)", port.protocol, port.port, port.portMask)
 	} else {
 		return fmt.Sprintf(" (%s %d)", port.protocol, port.port)
 	}
