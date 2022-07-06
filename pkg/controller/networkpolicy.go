@@ -2,13 +2,17 @@ package controller
 
 import (
 	"math"
+	"net"
 	"reflect"
 	"sync"
+
+	"golang.org/x/sys/unix"
 
 	"k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	corev1listers "k8s.io/client-go/listers/core/v1"
 	networkingv1listers "k8s.io/client-go/listers/networking/v1"
@@ -29,6 +33,7 @@ type networkPolicyController struct {
 	podLister           corev1listers.PodLister
 	networkPolicyLister networkingv1listers.NetworkPolicyLister
 
+	updates chan struct{}
 	policies []*networkPolicy
 }
 
@@ -69,6 +74,8 @@ func newNetworkPolicyController(client kubernetes.Interface, informers *util.Inf
 		namespaceLister:     informers.Core().V1().Namespaces().Lister(),
 		podLister:           informers.Core().V1().Pods().Lister(),
 		networkPolicyLister: informers.Networking().V1().NetworkPolicies().Lister(),
+
+		updates: make(chan struct{}, 1),
 	}
 
 	// Record the informers we need; their caches will be synced before Start() is called.
@@ -89,6 +96,21 @@ func (npc *networkPolicyController) Run() {
 		&v1.Pod{}, npc.handleAddOrUpdatePod, npc.handleDeletePod)
 	npc.informers.AddEventHandler(npc.informers.Networking().V1().NetworkPolicies().Informer(),
 		&networkingv1.NetworkPolicy{}, npc.handleAddOrUpdateNetworkPolicy, npc.handleDeleteNetworkPolicy)
+}
+
+// Updates returns a channel that will be selectable when an updated NetworkPolicy state
+// is available
+func (npc *networkPolicyController) Updates() <-chan struct{} {
+	return npc.updates
+}
+
+// GetNetworkPolicies returns the current set of NetworkPolicies. FIXME we eventually
+// need a better (eg, incremental) interface
+func (npc *networkPolicyController) GetNetworkPolicies() []*networkPolicy {
+	npc.Lock()
+	defer npc.Unlock()
+
+	return npc.policies
 }
 
 func (npc *networkPolicyController) handleAddOrUpdateNamespace(obj, old interface{}) {
@@ -394,5 +416,107 @@ func (npc *networkPolicyController) recompute() {
 	npc.policies = make([]*networkPolicy, len(policies))
 	for i, policy := range policies {
 		npc.policies[i] = npc.parseNetworkPolicy(policy)
+	}
+
+	// Write to the updates channel, but if it has already been signaled then don't
+	// block trying to write again.
+	select {
+	case npc.updates <- struct{}{}:
+	default:
+	}
+}
+
+type PodNetworkPolicies struct {
+	PodIP net.IP
+
+	Ingress *[]PodNetworkPolicyPeer
+	Egress *[]PodNetworkPolicyPeer
+}
+
+type PodNetworkPolicyPeer struct {
+	Peer *net.IPNet
+
+	Port     uint16
+	PortMask uint16
+	Protocol uint8
+}
+
+func (npc *networkPolicyController) GetPodNetworkPolicies() map[types.UID]*PodNetworkPolicies {
+	npc.Lock()
+	defer npc.Unlock()
+
+	policies := make(map[types.UID]*PodNetworkPolicies)
+	for _, npp := range npc.policies {
+		for _, pod := range npp.targets {
+			pp := policies[pod.UID]
+			if pp == nil {
+				pp = &PodNetworkPolicies{PodIP: net.ParseIP(pod.Status.PodIPs[0].IP)}
+				policies[pod.UID] = pp
+			}
+
+			if npp.ingress != nil {
+				if pp.Ingress == nil {
+					pp.Ingress = &[]PodNetworkPolicyPeer{}
+				}
+				for _, rule := range *npp.ingress {
+					*pp.Ingress = append(*pp.Ingress, podPeersFromRule(rule)...)
+				}
+			}
+			if npp.egress != nil {
+				if pp.Egress == nil {
+					pp.Egress = &[]PodNetworkPolicyPeer{}
+				}
+				for _, rule := range *npp.egress {
+					*pp.Egress = append(*pp.Egress, podPeersFromRule(rule)...)
+				}
+			}
+		}
+	}
+
+	return policies
+}
+
+func podPeersFromRule(rule *networkPolicyRule) []PodNetworkPolicyPeer {
+	var pp PodNetworkPolicyPeer
+
+	if rule.port != nil {
+		pp.Protocol = getProtocol(rule.port.protocol)
+		pp.Port = rule.port.port
+		pp.PortMask = rule.port.portMask
+	}
+
+	if rule.peer == nil {
+		peers := make([]PodNetworkPolicyPeer, 0, 2)
+		pp.Peer = &net.IPNet{IP: net.IPv4zero, Mask: net.CIDRMask(0, 32)}
+		peers = append(peers, pp)
+		pp.Peer = &net.IPNet{IP: net.IPv6zero, Mask: net.CIDRMask(0, 128)}
+		peers = append(peers, pp)
+		return peers
+	}
+
+	peers := make([]PodNetworkPolicyPeer, 0, len(rule.peer.pods) + len(rule.peer.cidrs))
+
+	for _, pod := range rule.peer.pods {
+		pp.Peer = &net.IPNet{IP: net.ParseIP(pod.Status.PodIPs[0].IP), Mask: net.CIDRMask(32, 32)}
+		peers = append(peers, pp)
+	}
+	for _, cidr := range rule.peer.cidrs {
+		_, pp.Peer, _ = net.ParseCIDR(cidr)
+		peers = append(peers, pp)
+	}
+
+	return peers
+}
+
+func getProtocol(protocol v1.Protocol) uint8 {
+	switch protocol {
+	case v1.ProtocolTCP:
+		return unix.IPPROTO_TCP
+	case v1.ProtocolUDP:
+		return unix.IPPROTO_UDP
+	case v1.ProtocolSCTP:
+		return unix.IPPROTO_SCTP
+	default:
+		return 0
 	}
 }
