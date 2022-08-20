@@ -32,10 +32,8 @@ func InitBPF(bpfs string) (map[string]*ebpf.Map, error) {
 	}
 
 	return map[string]*ebpf.Map{
-		"ingress_isolation_map": objs.IngressIsolationMap,
-		"egress_isolation_map": objs.EgressIsolationMap,
-		"ingress_rule_map": objs.IngressRuleMap,
-		"egress_rule_map": objs.EgressRuleMap,
+		"ingress_policy_map": objs.IngressPolicyMap,
+		"egress_policy_map": objs.EgressPolicyMap,
 	}, nil
 }
 
